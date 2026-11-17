@@ -23,6 +23,17 @@ include_directories(pvz2native PUBLIC include/)
 set_target_properties(pvz2native PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON OUTPUT_NAME pvz2)
 if (MSVC)
     target_compile_options(pvz2native PRIVATE /utf-8)
+    # The port calls fopen/sscanf/wcsncpy on purpose -- it is a host-side libc for
+    # the guest -- so MSVC's deprecation warnings are noise, and they bury the
+    # real error in any build log that a CI failure has to be read out of.
+    target_compile_definitions(pvz2native PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
+if (WIN32)
+    # windows.h defines min/max as macros, which turns every std::min and
+    # std::max call site into C2589 "'(': illegal token on right side of ':'"
+    # under MSVC. dynarmic sets the same define for its own targets.
+    target_compile_definitions(pvz2native PRIVATE NOMINMAX)
 endif()
 
 # Link the MinGW runtime statically so the .exe runs on a machine that has no
