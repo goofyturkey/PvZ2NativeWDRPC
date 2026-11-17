@@ -232,7 +232,11 @@ jobs:
           $stage = "dist-windows/$name"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item "build-win/pvz2native/pvz2.exe" $stage
-          Copy-Item -Recurse "build-win/pvz2native/Release/assets" $stage
+          # The UI assets live at the repo root, and nothing copies them into the
+          # build tree on Windows (compile.sh does that on Linux only), so this
+          # reads the source tree the same way compile.sh does.
+          if (-not (Test-Path "assets")) { throw "assets/ is missing from the source tree" }
+          Copy-Item -Recurse "assets" (Join-Path $stage "assets")
           Copy-Item "pvz2native/presence_rules*.txt" $stage
           Compress-Archive -Path "dist-windows/$name" -DestinationPath "PvZ2Native-Windows.zip" -Force
 
