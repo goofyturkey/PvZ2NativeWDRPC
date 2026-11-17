@@ -443,6 +443,24 @@ static int file_exists(const char *path) {
     return 1;
 }
 
+/* The libraries a mod build names in DT_NEEDED that the port does NOT answer
+ * with a host shim: they have to be next to libPVZ2.so, and the setup wizard
+ * copies them out of the APK for exactly that reason. Kept in step with
+ * kCompanions[] in first_boot_wizard.cpp.
+ *
+ * Telling them apart from libc.so / libm.so / libGLESv2.so matters. Both cases
+ * look identical here -- a DT_NEEDED name with no file beside the .so -- but one
+ * is normal and the other is fatal, and when it was fatal the only symptom was
+ * the data-import overflow far below, which says "bound to address 0" about
+ * libc++'s own typeinfo and nothing about the file that is missing. */
+static int is_required_companion(const char *name) {
+    static const char *const kCompanions[] = {"libNimble.so", "libc++_shared.so"};
+    for (size_t i = 0; i < sizeof(kCompanions) / sizeof(kCompanions[0]); ++i) {
+        if (strcmp(kCompanions[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
 /* Maps every DT_NEEDED library that ships beside the main .so, transitively.
  * `dir` is the main .so's directory including its trailing separator.
  *
@@ -466,6 +484,14 @@ static int map_dependencies(pvz2_elf_image_t *img, const char *dir, uint32_t *ne
                 char path[1024];
                 snprintf(path, sizeof(path), "%s%s", dir, name);
                 if (!file_exists(path)) {
+                    if (is_required_companion(name)) {
+                        pvz2_log("[elf32] '%s' needs '%s', which is not next to it. Put it "
+                                "beside libPVZ2.so -- it is inside the APK at "
+                                "lib/armeabi-v7a/%s, and the setup wizard copies it out. "
+                                "Without it nothing libc++ exports resolves and the engine "
+                                "cannot start", m->name, name, name);
+                        return -1;
+                    }
                     /* The normal case for libc.so, libm.so, libGLESv2.so and the
                      * rest of the system libraries: not shipped, and answered by
                      * the host shim layer instead. */

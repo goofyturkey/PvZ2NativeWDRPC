@@ -225,7 +225,16 @@ If every required native is found, the game boots on that build. What the scan *
 
 Those need a hand-written entry in `kVersions`. The scan prints every native it found, at its offset, in the log — that list is what such an entry is written from. To get one added, run the build once and attach the lines starting with `[version]`.
 
-**Verified against Grind Thousand.** GT000's `libPVZ2.so` (package `com.ea.game.pvz2_gt`, 30,915,228 bytes) is the 9.6.1 build above, unchanged: every `RegisterNatives` entry, the `AndroidAppDriver` GOT slot and vtable, and both fingerprints were re-checked against it, and this port's own loader identifies it as **9.6.1** with all seventeen natives. So GT000 needs no entry of its own — only its OBB (plus `libNimble.so` **and `libc++_shared.so`**, which its binary lists as `DT_NEEDED`; the wizard extracts them from the APK). One wrinkle it exposed: 9.6.1 registers `PumpMessageQueue` *without* the `Native_` prefix, which the structural scan now accepts.
+**Verified against Grind Thousand, through the loader.** GT000's `libPVZ2.so` (package `com.ea.game.pvz2_gt`, 30,915,228 bytes) is the 9.6.1 build above, unchanged: every `RegisterNatives` entry, the `AndroidAppDriver` GOT slot and vtable, and both fingerprints were re-checked against it. Loaded for real — with `libNimble.so` and `libc++_shared.so` beside it, which its binary lists as `DT_NEEDED` and the wizard extracts from the APK — it maps as three modules in constructor order, binds **415** imported symbols and 8 data imports, and comes out of `game_symbols_detect()` as **9.6.1** with all seventeen natives:
+
+```
+[elf32] dependency 'libc++_shared.so' mapped at 0x01f10000..0x01fb2b34 (650 KB, 2394 exports)
+[elf32] 3 modules mapped, images end at 0x01fb2b34; constructor order: libc++_shared.so libNimble.so libPVZ2.so
+[version] libPVZ2.so identified as 9.6.1 (onDrawFrame at 0x127cdcc, verified)
+[version] ...and it is the Grind Thousand build (package com.ea.game.pvz2_gt), which keeps the engine above unchanged
+```
+
+So GT000 needs no entry of its own — only its OBB. Two things it exposed: 9.6.1 registers `PumpMessageQueue` *without* the `Native_` prefix (the structural scan now accepts it, and a build that omits it is logged, since a 9.x boot with no queue drain draws nothing and says nothing), and a missing companion library used to be reported only as a data-import overflow full of libc++ typeinfo names — the loader now names the missing file and where to get it.
 
 To map a build without running it, `tools/dump_jni_tables.py` does the same scan against the APK (or its `libPVZ2.so`) on disk: it resolves the ELF relocations the way the loader does, prints every native with its offset, the two boot fingerprints, the `GameAppInitialize` object list and the inferred `onSurfaceChanged` padding, and ends with a ready-to-paste `kVersions` entry.
 
