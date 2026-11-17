@@ -1,0 +1,102 @@
+name: CI
+
+# Every push and pull request. The release workflow (build-linux.yml) only runs
+# on tags and manual dispatch, so before this existed nothing checked a commit
+# until it was already being released, and the AppImage job was the first time
+# the tree was ever compiled as a whole.
+#
+# Two jobs, deliberately in this order: the self-tests need no game files and no
+# toolchain beyond g++/python3, so they finish in seconds and gate the ~10 minute
+# build.
+
+on:
+  push:
+    # Every branch, not just main: work lands on feature branches first, and a
+    # red badge there is the point of having CI in the first place.
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE*'
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch cancels the first run's build.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  self-tests:
+    name: Self-tests (no game files)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Structural scanner self-test
+        # game/build_scan.cpp identifies modded libPVZ2.so builds by reading their
+        # RegisterNatives tables. It cannot be exercised against a real mod here
+        # (the game is not shipped), so the synthetic-image test must at least
+        # keep compiling and passing.
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -Ipvz2native/include \
+            pvz2native/src/game/build_scan.cpp pvz2native/tests/build_scan_test.cpp \
+            -o /tmp/build_scan_test
+          /tmp/build_scan_test
+
+      - name: Offline profiler self-test
+        # tools/dump_jni_tables.py is the offline twin of build_scan.cpp: same
+        # rules, applied to an APK on disk. Its fixture is a synthetic ARM32
+        # shared object, so this runs without any game files.
+        run: python3 tools/test_dump_jni_tables.py
+
+  build-linux:
+    name: Build (Linux x86_64, Release)
+    needs: self-tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        # python3-jinja2 is not optional: glad's generator is a python module in
+        # this tree (glad/glad/) and the build renders its sources with jinja2.
+        # Without it the configure step succeeds and the build dies at
+        # "ModuleNotFoundError: No module named 'jinja2'" while generating
+        # gladsources/glad/include/EGL/eglplatform.h.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config \
+            libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxi-dev libxinerama-dev libxxf86vm-dev libxss-dev \
+            libasound2-dev libpulse-dev libudev-dev libdbus-1-dev \
+            libwayland-dev libxkbcommon-dev \
+            python3-jinja2 \
+            file zip unzip
+
+      - name: Build
+        run: |
+          chmod +x compile.sh
+          ./compile.sh --no-assets --jobs "$(nproc)"
+
+      - name: Smoke test
+        # There are no game files on a runner, so the app is expected to exit
+        # non-zero -- but it must get far enough into main() to seed its
+        # configuration, which is what proves the binary linked and runs rather
+        # than merely existing. Dummy video/audio drivers keep SDL off the
+        # display.
+        run: |
+          cd build/pvz2native
+          rm -f config.ini
+          SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout 60 ./pvz2 || true
+          test -s config.ini || { echo "config.ini was not seeded -- main() did not run"; exit 1; }
+          file pvz2 | grep -q 'ELF 64-bit' || { echo "pvz2 is not an ELF64 binary"; exit 1; }
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: pvz2-linux-x86_64
+          path: build/pvz2native/pvz2
+          if-no-files-found: error
