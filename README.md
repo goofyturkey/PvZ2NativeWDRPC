@@ -225,6 +225,12 @@ If every required native is found, the game boots on that build. What the scan *
 
 Those need a hand-written entry in `kVersions`. The scan prints every native it found, at its offset, in the log — that list is what such an entry is written from. To get one added, run the build once and attach the lines starting with `[version]`.
 
+To map a build without running it, `tools/dump_jni_tables.py` does the same scan against the APK (or its `libPVZ2.so`) on disk: it resolves the ELF relocations the way the loader does, prints every native with its offset, the two boot fingerprints, the `GameAppInitialize` object list and the inferred `onSurfaceChanged` padding, and ends with a ready-to-paste `kVersions` entry.
+
+```bash
+python3 tools/dump_jni_tables.py GT_30FPS.apk
+```
+
 The first-boot wizard also reads the package name out of the OBB's own filename (`main.453.com.ea.game.pvz2_gt.obb` → `com.ea.game.pvz2_gt`) instead of assuming `..._row`, because the engine builds its own paths from that string.
 
 ---

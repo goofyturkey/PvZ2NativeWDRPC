@@ -225,6 +225,12 @@ Si aparecen todas las nativas necesarias, el juego arranca con esa build. Lo que
 
 Eso requiere una entrada escrita a mano en `kVersions`. El escaneo imprime en el log cada nativa que encontró, con su offset — esa lista es la materia prima de esa entrada. Para que se añada, ejecuta la build una vez y adjunta las líneas que empiezan por `[version]`.
 
+Para mapear una build sin ejecutarla, `tools/dump_jni_tables.py` hace el mismo escaneo sobre el APK (o su `libPVZ2.so`) en disco: resuelve las reubicaciones ELF igual que el cargador, imprime cada nativa con su offset, las dos huellas de arranque, la lista de objetos de `GameAppInitialize` y el relleno deducido de `onSurfaceChanged`, y termina con una entrada de `kVersions` lista para pegar.
+
+```bash
+python3 tools/dump_jni_tables.py GT_30FPS.apk
+```
+
 El asistente de primer arranque además lee el nombre del paquete del propio nombre del OBB (`main.453.com.ea.game.pvz2_gt.obb` → `com.ea.game.pvz2_gt`) en vez de suponer `..._row`, porque el motor construye sus propias rutas a partir de ese texto.
 
 ---

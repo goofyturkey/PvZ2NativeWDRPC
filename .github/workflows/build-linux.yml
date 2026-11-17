@@ -43,6 +43,12 @@ jobs:
             -o /tmp/build_scan_test
           /tmp/build_scan_test
 
+      - name: Offline profiler self-test
+        # tools/dump_jni_tables.py is the offline twin of build_scan.cpp: same
+        # rules, applied to an APK on disk. Its fixture is a synthetic ARM32
+        # shared object, so this runs without any game files.
+        run: python3 tools/test_dump_jni_tables.py
+
       - name: Build Linux binary and AppImage
         run: |
           chmod +x compile.sh compile-appimage.sh
