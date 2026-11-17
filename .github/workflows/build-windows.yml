@@ -39,28 +39,50 @@ jobs:
 
       - name: Set up MSVC
         # The runner image no longer answers to "Visual Studio 17 2022", so ask
-        # vswhere for whatever Visual Studio is actually installed -- the same
-        # thing compile-ninja.bat does -- and import its environment, which is
-        # what puts cl.exe on PATH for the Ninja build below. No generator name
-        # to keep in step with the image, and no third-party action.
+        # vswhere for whatever Visual Studio is installed -- the same thing
+        # compile-ninja.bat does -- and import its environment, which is what
+        # puts cl.exe on PATH for the Ninja build. No generator name to keep in
+        # step with the image, and no third-party action.
+        #
+        # Everything is wrapped so a failure lands in the run summary: this step
+        # is pure environment plumbing, and "exit code 1" from it says nothing
+        # about which of the four things it needs was missing.
         shell: pwsh
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (-not (Test-Path $vswhere)) { $vswhere = "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe" }
-          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found; the image has no Visual Studio" }
-          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $vs) { throw "no Visual Studio installation with the C++ x64 tools" }
-          Write-Host "Visual Studio: $vs"
-          $devcmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
-          if (-not (Test-Path $devcmd)) { throw "missing $devcmd" }
-          cmd /c "`"$devcmd`" -arch=x64 -host_arch=x64 >nul 2>&1 && set" | ForEach-Object {
-            if ($_ -match '^([^=]+)=(.*)$') {
-              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $ErrorActionPreference = 'Stop'
+          try {
+            $candidates = @(
+              "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe",
+              "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe"
+            )
+            $vswhere = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (-not $vswhere) { throw "vswhere.exe not found in: $($candidates -join ', ')" }
+
+            $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if (-not $vs) { throw "vswhere found no installation with the VC.Tools.x86.x64 component" }
+            Write-Host "Visual Studio: $vs"
+
+            $devcmd = Join-Path $vs 'Common7\Tools\VsDevCmd.bat'
+            if (-not (Test-Path $devcmd)) { throw "missing $devcmd" }
+
+            # Not a bare `cl`: invoking the compiler with no arguments prints its
+            # banner and then exits non-zero over the missing source filename,
+            # and the pwsh wrapper propagates LASTEXITCODE.
+            $lines = & cmd /c "`"$devcmd`" -arch=x64 -host_arch=x64 >nul 2>&1 && set"
+            $exported = 0
+            foreach ($line in $lines) {
+              if ($line -match '^([^=]+)=(.*)$') {
+                "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+                $exported++
+              }
             }
+            Write-Host "exported $exported environment variables from VsDevCmd"
+            if ($exported -lt 5) { throw "VsDevCmd exported only $exported variables -- the C++ tools are probably not installed" }
+          } catch {
+            $msg = (($_ | Out-String).Trim()) -replace "`r?`n", '%0A'
+            Write-Host "::error title=MSVC setup failed::$msg"
+            exit 1
           }
-          $cl = (Get-Command cl.exe -ErrorAction SilentlyContinue)
-          if (-not $cl) { throw "cl.exe is not on PATH after VsDevCmd" }
-          & cl 2>&1 | Select-Object -First 1
 
       - name: Configure
         # Annotated on failure: the run summary used to say only "exit code 1",
