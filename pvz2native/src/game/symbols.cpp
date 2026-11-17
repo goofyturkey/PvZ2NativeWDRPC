@@ -5,12 +5,20 @@
  * decompile JNI_OnLoad and read its JNINativeMethod tables for the `native`
  * offsets, then take the two fingerprints with any hex viewer.
  *
+ * A build with no entry -- every mod, until someone maps it -- is not simply
+ * refused: game_symbols_detect falls back to build_scan.cpp, which finds the
+ * natives by the names RegisterNatives was given and parses GameAppInitialize's
+ * objects out of its JNI signature. That boots the engine without an address
+ * table; what it cannot recover (globals, field offsets, patch sites) stays
+ * unmapped, so the features that read them stay off. See build_scan.h.
+ *
  * Name every field you set (.native = {...}) and leave the rest out rather than
  * writing a 0 placeholder -- see GameSymbols for why a positional entry here is
  * a silent hazard. What an entry does NOT mention is unmapped, which is exactly
  * what 0 means to every reader of the table.
  */
 
+#include <pvz2native/game/build_scan.h>
 #include <pvz2native/game/symbols.h>
 #include <pvz2native/log.h>
 
@@ -481,6 +489,23 @@ bool game_symbols_detect(const pvz2_elf_image_t *img) {
                  (unsigned long long)v.fingerprint_draw_frame,
                  (unsigned long long)fingerprint_at(img, v.native.on_draw_frame));
     }
+
+    /* Every mod rebases a stock build, so its addresses are nobody's literals --
+     * but the names it registers with RegisterNatives are the framework's, and
+     * those have not changed across the whole span the mod scene builds on. Read
+     * the natives back out of the image by name (build_scan.cpp) instead of
+     * refusing a build that is 95% the engine we already drive. */
+    static GameSymbols scanned;      /* GameSymbols holds pointers: must outlive sym() */
+    static BuildScanReport report;
+    if (scan_build(img, &scanned, &report)) {
+        g_active = &scanned;
+        pvz2_log("[version] identified structurally as %s -- engine globals, field offsets "
+                 "and patch sites stay unmapped (see src/game/build_scan.cpp)",
+                 report.name);
+        return true;
+    }
+    pvz2_log("[version] structural scan refused it too: %s",
+             report.missing[0] ? report.missing : "no usable RegisterNatives table");
     pvz2_log("[version] add an entry to kVersions in src/game/symbols.cpp to support it");
     return false;
 }

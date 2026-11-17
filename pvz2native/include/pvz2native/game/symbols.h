@@ -418,10 +418,14 @@ struct GameSymbols {
  * which therefore is not in the per-version lists above. */
 extern const char *const kGameAppClass;
 
-/* Identifies the loaded image against the built-in table.
+/* Identifies the loaded image against the built-in table, and -- when no entry
+ * matches -- against the image itself (game/build_scan.h): a mod rebases a stock
+ * build, so its addresses are nobody's literals, but the names it registers with
+ * RegisterNatives are the framework's and can be read back out of the image.
  *
- * Returns false when nothing matches, having logged the candidates it tried and
- * what it found instead -- which is the report someone adding a version needs.
+ * Returns false when neither identification works, having logged the candidates
+ * it tried, what it found instead, and which natives the structural scan could
+ * not find -- which is exactly the report someone adding a version needs.
  * Booting anyway would mean calling whatever happens to sit at another build's
  * offsets, so the caller must refuse to start. */
 bool game_symbols_detect(const pvz2_elf_image_t *img);

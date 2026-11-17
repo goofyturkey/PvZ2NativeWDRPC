@@ -32,6 +32,17 @@ jobs:
             libwayland-dev libxkbcommon-dev \
             file wget curl zip unzip python3
 
+      - name: Scanner self-test
+        # game/build_scan.cpp identifies modded libPVZ2.so builds by reading
+        # their RegisterNatives tables. It cannot be exercised against a real
+        # mod here (the game is not shipped), so the synthetic-image test must
+        # at least keep compiling and passing.
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -Ipvz2native/include \
+            pvz2native/src/game/build_scan.cpp pvz2native/tests/build_scan_test.cpp \
+            -o /tmp/build_scan_test
+          /tmp/build_scan_test
+
       - name: Build Linux binary and AppImage
         run: |
           chmod +x compile.sh compile-appimage.sh

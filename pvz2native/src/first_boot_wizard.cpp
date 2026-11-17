@@ -5,6 +5,7 @@
 
 #include <SDL.h>
 
+#include <cctype>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -51,6 +52,48 @@ static bool file_exists_and_not_empty(const std::string &path) {
 static std::string to_lower_str(std::string s) {
     for (char &c : s) c = (char)std::tolower((unsigned char)c);
     return s;
+}
+
+/* The package name out of an OBB's own filename -- "main.453.com.ea.game.pvz2_gt.obb"
+ * -> "com.ea.game.pvz2_gt".
+ *
+ * Android names every expansion file after the package that owns it, and mods
+ * rename the package (Grind Thousand is com.ea.game.pvz2_gt, ECLISE
+ * com.ea.game.pvz2_ecl, Reflourished com.ea.game.pvz2_rfl) while keeping the
+ * main.<versionCode>.<package>.obb shape. The engine asks Java for this string
+ * and builds its own paths from it, so guessing "row" for a mod is a real
+ * mismatch, not a cosmetic one. The old code looked for the substring "row"
+ * anywhere in the name, which also cannot tell the mods apart at all.
+ *
+ * Returns "" when the name is not that shape; the caller then falls back to the
+ * old substring rule. */
+static std::string package_from_obb_name(const std::string &path_or_name) {
+    std::string name = to_lower_str(path_or_name);
+    const auto slash = name.find_last_of("/\\");
+    if (slash != std::string::npos) name.erase(0, slash + 1);
+
+    const std::string prefix = "main.";
+    if (name.compare(0, prefix.size(), prefix) != 0) return std::string();
+    std::size_t at = prefix.size();
+    const std::size_t digits = at;
+    while (at < name.size() && std::isdigit((unsigned char)name[at])) ++at;
+    if (at == digits || at >= name.size() || name[at] != '.') return std::string();
+
+    if (name.size() < 4 || name.compare(name.size() - 4, 4, ".obb") != 0) return std::string();
+    const std::size_t pkg_begin = at + 1;
+    const std::size_t pkg_end = name.size() - 4;
+    if (pkg_end <= pkg_begin) return std::string();
+
+    const std::string pkg = name.substr(pkg_begin, pkg_end - pkg_begin);
+    /* A package name is dot-separated identifier segments; anything else is a
+     * file that merely starts with "main." -- refuse rather than feed the
+     * engine a path fragment. */
+    if (pkg.compare(0, 4, "com.") != 0) return std::string();
+    for (char c : pkg) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.';
+        if (!ok) return std::string();
+    }
+    return pkg;
 }
 
 #ifdef _WIN32
@@ -215,8 +258,11 @@ static bool scan_and_extract_archive(const std::string &archive_path, const std:
                 const std::string dest_obb = dest_dir + "data.obb";
                 if (extract_current_unz_file(uf, dest_obb)) {
                     out_obb = true;
-                    if (lower_entry.find("row") != std::string::npos) out_pkg = "com.ea.game.pvz2_row";
-                    else if (lower_entry.find("na") != std::string::npos) out_pkg = "com.ea.game.pvz2_na";
+                    out_pkg = package_from_obb_name(lower_entry);
+                    if (out_pkg.empty()) {
+                        if (lower_entry.find("row") != std::string::npos) out_pkg = "com.ea.game.pvz2_row";
+                        else if (lower_entry.find("na") != std::string::npos) out_pkg = "com.ea.game.pvz2_na";
+                    }
                 }
             }
             /* Check for inner APK (e.g. in XAPK packages) */
@@ -327,8 +373,11 @@ extern "C" int pvz2_ensure_required_files(const pvz2_config_t *cfg) {
                 std::string lower = to_lower_str(filename);
                 if (lower.size() > 4 && lower.compare(lower.size() - 4, 4, ".obb") == 0) {
                     found_obb = entry.path().string();
-                    if (lower.find("row") != std::string::npos) detected_pkg = "com.ea.game.pvz2_row";
-                    else if (lower.find("na") != std::string::npos) detected_pkg = "com.ea.game.pvz2_na";
+                    detected_pkg = package_from_obb_name(filename);
+                    if (detected_pkg.empty()) {
+                        if (lower.find("row") != std::string::npos) detected_pkg = "com.ea.game.pvz2_row";
+                        else if (lower.find("na") != std::string::npos) detected_pkg = "com.ea.game.pvz2_na";
+                    }
                     break;
                 }
             }
@@ -440,8 +489,11 @@ extern "C" int pvz2_ensure_required_files(const pvz2_config_t *cfg) {
                     if (copy_file_platform(entry.path().string(), dest)) {
                         has_obb = true;
                         found_obb = dest;
-                        if (lower.find("row") != std::string::npos) detected_pkg = "com.ea.game.pvz2_row";
-                        else if (lower.find("na") != std::string::npos) detected_pkg = "com.ea.game.pvz2_na";
+                        detected_pkg = package_from_obb_name(fname);
+                        if (detected_pkg.empty()) {
+                            if (lower.find("row") != std::string::npos) detected_pkg = "com.ea.game.pvz2_row";
+                            else if (lower.find("na") != std::string::npos) detected_pkg = "com.ea.game.pvz2_na";
+                        }
                         break;
                     }
                 }
@@ -468,8 +520,11 @@ extern "C" int pvz2_ensure_required_files(const pvz2_config_t *cfg) {
             }
 
             std::string lower_obb = to_lower_str(chosen_obb);
-            if (lower_obb.find("row") != std::string::npos) detected_pkg = "com.ea.game.pvz2_row";
-            else if (lower_obb.find("na") != std::string::npos) detected_pkg = "com.ea.game.pvz2_na";
+            detected_pkg = package_from_obb_name(chosen_obb);
+            if (detected_pkg.empty()) {
+                if (lower_obb.find("row") != std::string::npos) detected_pkg = "com.ea.game.pvz2_row";
+                else if (lower_obb.find("na") != std::string::npos) detected_pkg = "com.ea.game.pvz2_na";
+            }
 
             const std::string dest_obb = base_dir + "data.obb";
             if (copy_file_platform(chosen_obb, dest_obb)) {

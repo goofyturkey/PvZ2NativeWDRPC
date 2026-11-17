@@ -196,15 +196,36 @@ Piezas destacadas:
 
 ## 🎮 Versiones del juego soportadas
 
-Se detecta la versión por **huella de bytes** en dos funciones nativas conocidas; si no coincide ninguna, el arranque se rechaza en vez de correr a ciegas.
+Se detecta la versión por **huella de bytes** en dos funciones nativas conocidas. Si ninguna coincide, la build se **identifica por su estructura** en vez de rechazarse — ver [Mods y builds personalizadas](#-mods-y-builds-personalizadas-grind-thousand-eclise-refresh) más abajo.
 
 | Versión | OBB típico | Estado |
 | --- | --- | --- |
 | **1.6.10** (2013) | `main.7.com.ea.game.pvz2_na.obb` | 🟢 Jugable |
 | **4.5.2** (2016) | `main.147.com.ea.game.pvz2_row.obb` (a menudo se distribuye / renombra como `data.obb`) | 🟢 Jugable |
 | **6.6.1** (2018) | `main.434.com.ea.game.pvz2_row.obb` (o `data.obb` junto a `libNimble.so`) | 🟡 En pruebas (Aventura y niveles jugables; Batallaz / Arena aún no funciona) |
+| **9.6.1** (Reflourished 1.3.1) | `main.675.com.ea.game.pvz2_rfl.obb` | 🟡 En pruebas (última Reflourished con build armeabi-v7a) |
+| **Mods** (Grind Thousand / GT000, ECLISE, …) | `main.<versionCode>.<paquete del mod>.obb`, p. ej. `main.453.com.ea.game.pvz2_gt.obb` | 🟡 Arranca por identificación estructural; ver la nota de abajo sobre lo que aún no está mapeado |
 
-PvZ2Native utiliza un **único ejecutable universal**: tanto la versión 4.5.2 como la 6.6.1 se detectan automáticamente al arrancar mediante huellas de funciones ELF en [symbols.cpp](pvz2native/src/game/symbols.cpp), aplicando dinámicamente los parches correspondientes, los offsets de símbolos, librerías asociadas (`libNimble.so`) y las reglas de Discord Rich Presence con total retrocompatibilidad. *Nota: La versión 6.6.1 sigue actualmente en pruebas; características como Batallaz (Battlez) aún no están funcionando.*
+PvZ2Native utiliza un **único ejecutable universal**: cada build se detecta automáticamente al arrancar mediante huellas de funciones ELF en [symbols.cpp](pvz2native/src/game/symbols.cpp), aplicando dinámicamente los parches correspondientes, los offsets de símbolos, librerías asociadas (`libNimble.so`, `libc++_shared.so`) y las reglas de Discord Rich Presence con total retrocompatibilidad. *Nota: La versión 6.6.1 sigue actualmente en pruebas; características como Batallaz (Battlez) aún no están funcionando.*
+
+### 🧩 Mods y builds personalizadas (Grind Thousand, ECLISE, Refresh)
+
+Un mod trae su propio `libPVZ2.so`, rebasado a partir de una de las builds de arriba: cada dirección dentro de él es distinta, así que ninguna huella coincide y la tabla no puede ayudar. Lo que un mod **no** cambia es el conjunto de métodos Java que llama el framework, y esos se registran con `RegisterNatives` desde tablas `JNINativeMethod` que son datos planos con el **nombre**, la **firma JNI** y la **dirección** de cada método.
+
+Por eso, cuando ninguna entrada de la tabla coincide, [build_scan.cpp](pvz2native/src/game/build_scan.cpp) lee esas tablas de la imagen cargada:
+
+- cada nativa que usa la secuencia de arranque se localiza **por nombre** (`Native_onDrawFrame`, `Native_GameAppInitialize`, la familia de ciclo de vida, `Native_PumpMessageQueue`, los tres `Notify*` y los callbacks `HttpTransaction*`);
+- los objetos declarados por `Native_GameAppInitialize` se leen de su propia firma — siete desde 9.6.1, ocho antes — en vez de estar escritos por versión;
+- el relleno de argumentos de `onSurfaceChanged` se deduce de las primeras instrucciones del cuerpo.
+
+Si aparecen todas las nativas necesarias, el juego arranca con esa build. Lo que el escaneo **no** puede recuperar, porque la imagen no lo nombra en ningún lado, es:
+
+- los globales y offsets de campos del motor (`LawnApp`, `AndroidAppDriver`, `Board`), así que **el detalle de Rich Presence, la comprobación de pausa y los diagnósticos de frame quedan apagados**;
+- las direcciones de los parches, así que las **dificultades extra** (Hard+, Hard++, Point Zero) y las reescrituras de la **tienda emulada** no se aplican a esa build.
+
+Eso requiere una entrada escrita a mano en `kVersions`. El escaneo imprime en el log cada nativa que encontró, con su offset — esa lista es la materia prima de esa entrada. Para que se añada, ejecuta la build una vez y adjunta las líneas que empiezan por `[version]`.
+
+El asistente de primer arranque además lee el nombre del paquete del propio nombre del OBB (`main.453.com.ea.game.pvz2_gt.obb` → `com.ea.game.pvz2_gt`) en vez de suponer `..._row`, porque el motor construye sus propias rutas a partir de ese texto.
 
 ---
 

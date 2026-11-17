@@ -196,15 +196,36 @@ Notable pieces:
 
 ## 🎮 Supported game versions
 
-The version is detected by a **byte fingerprint** at two known native functions; if none matches, boot is refused rather than running blind.
+The version is detected by a **byte fingerprint** at two known native functions. A build with no entry in the table is then **identified structurally** instead of being refused — see [Mods and custom builds](#-mods-and-custom-builds-grind-thousand-eclise-refresh) below.
 
 | Version | Typical OBB | Status |
 | --- | --- | --- |
 | **1.6.10** (2013) | `main.7.com.ea.game.pvz2_na.obb` | 🟢 Playable |
 | **4.5.2** (2016) | `main.147.com.ea.game.pvz2_row.obb` (often shipped / renamed as `data.obb`) | 🟢 Playable |
 | **6.6.1** (2018) | `main.434.com.ea.game.pvz2_row.obb` (or `data.obb` alongside `libNimble.so`) | 🟡 In testing (Adventure and levels playable; Battlez / Arena not yet working) |
+| **9.6.1** (Reflourished 1.3.1) | `main.675.com.ea.game.pvz2_rfl.obb` | 🟡 In testing (last Reflourished release that ships an armeabi-v7a build) |
+| **Mods** (Grind Thousand / GT000, ECLISE, …) | `main.<versionCode>.<mod package>.obb`, e.g. `main.453.com.ea.game.pvz2_gt.obb` | 🟡 Boots via structural identification; see the note below for what is not mapped yet |
 
-PvZ2Native uses a **unified single executable**: both 4.5.2 and 6.6.1 are detected automatically at boot via ELF function fingerprints in [symbols.cpp](pvz2native/src/game/symbols.cpp), applying the correct patches, symbol offsets, companion libraries (`libNimble.so`), and Discord Rich Presence rules on the fly with 100% backward compatibility. *Note: 6.6.1 support is currently in active testing; features like Battlez (Batallaz) are not yet working.*
+PvZ2Native uses a **unified single executable**: every build is detected at boot via ELF function fingerprints in [symbols.cpp](pvz2native/src/game/symbols.cpp), applying the correct patches, symbol offsets, companion libraries (`libNimble.so`, `libc++_shared.so`), and Discord Rich Presence rules on the fly. *Note: 6.6.1 support is currently in active testing; features like Battlez (Batallaz) are not yet working.*
+
+### 🧩 Mods and custom builds (Grind Thousand, ECLISE, Refresh)
+
+A mod ships its own `libPVZ2.so`, rebased from one of the builds above: every address inside it is different, so no fingerprint matches and a table lookup cannot help. What a mod does **not** change is the set of Java methods the framework calls, and those are registered with `RegisterNatives` from plain-data `JNINativeMethod` tables that carry each method's **name**, **JNI signature** and **address**.
+
+So when no table entry matches, [build_scan.cpp](pvz2native/src/game/build_scan.cpp) reads those tables out of the loaded image:
+
+- every native the boot sequence drives is located **by name** (`Native_onDrawFrame`, `Native_GameAppInitialize`, the lifecycle family, `Native_PumpMessageQueue`, the three `Notify*` setters, and the `HttpTransaction*` callbacks);
+- `Native_GameAppInitialize`'s declared objects are parsed from its own signature — seven since 9.6.1, eight before — instead of being hardcoded per version;
+- the `onSurfaceChanged` argument padding is inferred from the first instructions of the body.
+
+If every required native is found, the game boots on that build. What the scan **cannot** recover, because the image does not name it anywhere, is:
+
+- engine globals and field offsets (`LawnApp`, `AndroidAppDriver`, `Board`), so **Rich Presence detail, the pause check and the frame diagnostics stay off**;
+- the patch call sites, so the **custom difficulties** (Hard+, Hard++, Point Zero) and the **emulated store** rewrites do not apply to that build.
+
+Those need a hand-written entry in `kVersions`. The scan prints every native it found, at its offset, in the log — that list is what such an entry is written from. To get one added, run the build once and attach the lines starting with `[version]`.
+
+The first-boot wizard also reads the package name out of the OBB's own filename (`main.453.com.ea.game.pvz2_gt.obb` → `com.ea.game.pvz2_gt`) instead of assuming `..._row`, because the engine builds its own paths from that string.
 
 ---
 
