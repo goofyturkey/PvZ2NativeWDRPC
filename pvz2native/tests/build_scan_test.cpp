@@ -134,7 +134,8 @@ void add_modern_natives(FakeImage &f, const char *omit = nullptr) {
         {"Native_onSurfaceCreated", "()V", false},
         {"Native_onSurfaceChanged", "(II)V", true},
         {"Native_onDrawFrame", "()V", false},
-        {"Native_PumpMessageQueue", "()V", false},
+        /* 9.6.1 and everything derived from it register it BARE. */
+        {"PumpMessageQueue", "()V", false},
     };
     for (const Row &r : rows) {
         if (omit != nullptr && std::strcmp(omit, r.name) == 0) continue;
@@ -208,6 +209,55 @@ void test_missing_required_native_refused() {
           "the refusal names the missing native");
 }
 
+void test_prefixed_pump_message_queue_also_maps() {
+    std::printf("build that prefixes PumpMessageQueue\n");
+    FakeImage f;
+    add_modern_natives(f, "PumpMessageQueue");
+    f.add_entry("Native_PumpMessageQueue", "()V", f.add_function(nullptr, 0));
+
+    pvz2native::GameSymbols syms{};
+    pvz2native::BuildScanReport report{};
+    check(pvz2native::scan_build(&f.img, &syms, &report), "scan identifies the build");
+    check(syms.native.pump_message_queue != 0, "either spelling maps to pump_message_queue");
+}
+
+void test_bare_pump_message_queue_maps() {
+    std::printf("bare PumpMessageQueue (the 9.6.1 spelling)\n");
+    FakeImage f;
+    add_modern_natives(f);
+
+    pvz2native::GameSymbols syms{};
+    pvz2native::BuildScanReport report{};
+    check(pvz2native::scan_build(&f.img, &syms, &report), "scan identifies the build");
+    check(syms.native.pump_message_queue != 0, "the un-prefixed native is found");
+}
+
+void test_format_string_is_not_a_signature() {
+    std::printf("a printf format where a JNI signature should be\n");
+    FakeImage f;
+    /* "(%d x %d)" has the same shape as a signature, and an entry whose other
+     * two words are real would otherwise be mapped to the wrong function. */
+    f.add_entry("Native_onDrawFrame", "(%d x %d)", f.add_function(nullptr, 0));
+
+    pvz2native::GameSymbols syms{};
+    pvz2native::BuildScanReport report{};
+    check(!pvz2native::scan_build(&f.img, &syms, &report), "refused");
+    check(syms.native.on_draw_frame == 0, "nothing mapped from it");
+}
+
+void test_unaligned_function_pointer_rejected() {
+    std::printf("function pointer that is not word-aligned\n");
+    FakeImage f;
+    /* ARM code is word-aligned, so an odd pointer is a datum that happens to
+     * sit in the text range -- exactly the near-miss a real image produced. */
+    f.add_entry("Native_onDrawFrame", "()V", f.add_function(nullptr, 0) | 1u);
+
+    pvz2native::GameSymbols syms{};
+    pvz2native::BuildScanReport report{};
+    check(!pvz2native::scan_build(&f.img, &syms, &report), "refused");
+    check(syms.native.on_draw_frame == 0, "unaligned pointer not mapped");
+}
+
 void test_single_entry_array_still_maps() {
     std::printf("own one-entry table (createNativeApplicationLifecycleObserver)\n");
     FakeImage f;
@@ -272,6 +322,10 @@ int main() {
     test_modern_build_identifies();
     test_legacy_build_eight_objects();
     test_missing_required_native_refused();
+    test_bare_pump_message_queue_maps();
+    test_prefixed_pump_message_queue_also_maps();
+    test_format_string_is_not_a_signature();
+    test_unaligned_function_pointer_rejected();
     test_single_entry_array_still_maps();
     test_wrong_signature_ignored();
     test_empty_image_refused();

@@ -160,6 +160,9 @@ def make_image() -> bytes:
         movs = (MOV_R5_R2, MOV_R4_R3) if name == "Native_onSurfaceChanged" else ()
         # Half the entries go through a relocation, so the resolver is exercised.
         b.entry(name, sig, b.function(movs), via_symbol=(i % 2 == 0))
+    # The fixture mirrors 9.6.1: the native is registered bare...
+    b.entry("PumpMessageQueue", "()V", b.function())
+    # ...and a build that prefixes it must still map, into the same field.
     b.entry("Native_PumpMessageQueue", "()V", b.function())
     b.entry("Native_DoSomethingElse", "(I)I", b.function())
     return b.build()
@@ -191,7 +194,8 @@ class ToolTest(unittest.TestCase):
         natives = data["natives"]
         for name, _sig in REQUIRED:
             self.assertIn(name, natives, name)
-        self.assertIn("Native_PumpMessageQueue", natives)
+        # 9.6.1 and everything derived from it register this one bare.
+        self.assertIn("PumpMessageQueue", natives)
         # Offsets land inside the R+X segment, which is where bodies live.
         for offset in natives.values():
             self.assertIsInstance(offset, int)

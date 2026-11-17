@@ -225,6 +225,8 @@ If every required native is found, the game boots on that build. What the scan *
 
 Those need a hand-written entry in `kVersions`. The scan prints every native it found, at its offset, in the log — that list is what such an entry is written from. To get one added, run the build once and attach the lines starting with `[version]`.
 
+**Verified against Grind Thousand.** GT000's `libPVZ2.so` (package `com.ea.game.pvz2_gt`, 30,915,228 bytes) is the 9.6.1 build above, unchanged: every `RegisterNatives` entry, the `AndroidAppDriver` GOT slot and vtable, and both fingerprints were re-checked against it, and this port's own loader identifies it as **9.6.1** with all seventeen natives. So GT000 needs no entry of its own — only its OBB (plus `libNimble.so` **and `libc++_shared.so`**, which its binary lists as `DT_NEEDED`; the wizard extracts them from the APK). One wrinkle it exposed: 9.6.1 registers `PumpMessageQueue` *without* the `Native_` prefix, which the structural scan now accepts.
+
 To map a build without running it, `tools/dump_jni_tables.py` does the same scan against the APK (or its `libPVZ2.so`) on disk: it resolves the ELF relocations the way the loader does, prints every native with its offset, the two boot fingerprints, the `GameAppInitialize` object list and the inferred `onSurfaceChanged` padding, and ends with a ready-to-paste `kVersions` entry.
 
 ```bash

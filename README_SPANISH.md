@@ -225,6 +225,8 @@ Si aparecen todas las nativas necesarias, el juego arranca con esa build. Lo que
 
 Eso requiere una entrada escrita a mano en `kVersions`. El escaneo imprime en el log cada nativa que encontró, con su offset — esa lista es la materia prima de esa entrada. Para que se añada, ejecuta la build una vez y adjunta las líneas que empiezan por `[version]`.
 
+**Verificado con Grind Thousand.** El `libPVZ2.so` de GT000 (paquete `com.ea.game.pvz2_gt`, 30.915.228 bytes) es la build 9.6.1 de arriba, sin cambios: se revisaron contra él todas las entradas de `RegisterNatives`, el slot GOT y la vtable de `AndroidAppDriver`, y las dos huellas, y el propio cargador de este port lo identifica como **9.6.1** con sus diecisiete nativas. Así que GT000 no necesita una entrada propia: solo su OBB (y `libNimble.so` **y `libc++_shared.so`**, que su binario lista como `DT_NEEDED`; el asistente los extrae del APK). Un detalle que dejó al descubierto: 9.6.1 registra `PumpMessageQueue` *sin* el prefijo `Native_`, cosa que el escaneo estructural ahora acepta.
+
 Para mapear una build sin ejecutarla, `tools/dump_jni_tables.py` hace el mismo escaneo sobre el APK (o su `libPVZ2.so`) en disco: resuelve las reubicaciones ELF igual que el cargador, imprime cada nativa con su offset, las dos huellas de arranque, la lista de objetos de `GameAppInitialize` y el relleno deducido de `onSurfaceChanged`, y termina con una entrada de `kVersions` lista para pegar.
 
 ```bash

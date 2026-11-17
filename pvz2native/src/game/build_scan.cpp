@@ -104,7 +104,14 @@ const NativeName kNativeNames[] = {
     {"Native_onSurfaceCreated", Field::kSurfaceCreated, true},
     {"Native_onSurfaceChanged", Field::kSurfaceChanged, true},
     {"Native_onDrawFrame", Field::kDrawFrame, true},
-    {"Native_PumpMessageQueue", Field::kPumpMessageQueue, false},
+    /* Registered WITHOUT the Native_ prefix in 9.6.1 and everything derived
+     * from it -- the surface family sits in one array and this entry is the odd
+     * one out. Missing it is not cosmetic: on a 9.x-family build the frame loop
+     * must drain the lifecycle queue before drawing, or applicationDidBecome-
+     * Active never clears the driver's "skip this frame" byte and the window
+     * stays black with no error. */
+    {"PumpMessageQueue", Field::kPumpMessageQueue, false},
+    {"Native_PumpMessageQueue", Field::kPumpMessageQueue, false}, /* if a build prefixes it */
     {"Native_createNativeApplicationLifecycleObserver", Field::kLifecycleObserver, false},
     {"Native_NotifySurfaceChange", Field::kNotifySurface, false},
     {"Native_NotifyAppRunning", Field::kNotifyRunning, false},
@@ -199,6 +206,21 @@ bool readable_string(const Image &im, std::uint32_t va, std::uint32_t max_len, b
         }
     }
     return false;
+}
+
+/* A JNI signature's alphabet: type descriptors, class separators and the
+ * letters/digits/underscores of a class name. Anything else -- notably a printf
+ * format string like "(%d x %d)", which has the same shape -- is not one. */
+bool plausible_signature(const Image &im, std::uint32_t va, std::uint32_t len) {
+    const char *s = im.bytes(va);
+    for (std::uint32_t i = 0; i < len; ++i) {
+        const char c = s[i];
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '(' || c == ')' || c == '[' ||
+                        c == ']' || c == ';' || c == '/' || c == '_' || c == '$';
+        if (!ok) return false;
+    }
+    return true;
 }
 
 /* A first instruction that cannot start a function we would call: all-zero (an
@@ -399,10 +421,13 @@ bool scan_build(const pvz2_elf_image_t *img, GameSymbols *out, BuildScanReport *
     im.text_hi = img->text_size != 0 ? im.text_lo + img->text_size : 0;
 
     /* One linear pass over the image. The filter is deliberately cheap: a word
-     * that points into the image and whose first byte is one a native name can
-     * start with ("Native_..." or "Http..."). Anything that survives is then
-     * validated whole, so the pass costs a word compare per 4 bytes rather than
-     * a string read. */
+     * that points into the image and whose first byte is an upper-case letter,
+     * which every native name starts with. It is NOT filtered on a "Native_"
+     * prefix -- 9.6.1 registers Native_PumpMessageQueue as bare
+     * "PumpMessageQueue", and assuming the prefix silently lost the one native
+     * whose absence leaves a 9.x build drawing nothing. Anything that survives
+     * is validated whole, so the pass costs a word compare per 4 bytes rather
+     * than a string read. */
     std::vector<Entry> entries;
     /* Set when a name we know turns up beside a signature that belongs to some
      * other method: worth saying out loud, because that is the shape of a
@@ -414,7 +439,7 @@ bool scan_build(const pvz2_elf_image_t *img, GameSymbols *out, BuildScanReport *
         const std::uint32_t name_va = im.u32(at);
         if (!im.has(name_va, 1)) continue;
         const char first = im.bytes(name_va)[0];
-        if (first != 'N' && first != 'H') continue;
+        if (first < 'A' || first > 'Z') continue;
 
         std::uint32_t name_len = 0;
         if (!readable_string(im, name_va, kMaxNameLen, true, &name_len) || name_len < 6) continue;
@@ -423,12 +448,14 @@ bool scan_build(const pvz2_elf_image_t *img, GameSymbols *out, BuildScanReport *
         std::uint32_t sig_len = 0;
         if (!readable_string(im, sig_va, kMaxSigLen, false, &sig_len) || sig_len < 3) continue;
         if (im.bytes(sig_va)[0] != '(' || std::memchr(im.bytes(sig_va), ')', sig_len) == nullptr) continue;
+        if (!plausible_signature(im, sig_va, sig_len)) continue;
 
         /* The function has to be code in this image -- in the R+X segment when
          * the loader told us where it is, anywhere in the image otherwise.
          * Nothing stronger is possible: several lifecycle natives are a single
          * `BX LR`. */
         const std::uint32_t fn = im.u32(at + 8);
+        if ((fn & 3u) != 0) continue; /* ARM code is word-aligned */
         if (im.text_hi > im.text_lo ? !im.in_text(fn) : (fn < im.lo || fn >= im.hi)) continue;
         if (!plausible_code(im, fn)) continue;
 
@@ -448,7 +475,7 @@ bool scan_build(const pvz2_elf_image_t *img, GameSymbols *out, BuildScanReport *
             continue;
         }
         entries.push_back(e);
-        if (entries.size() >= 512) break; /* a real build declares ~30 */
+        if (entries.size() >= 4096) break; /* a real build declares ~30 */
     }
 
     if (entries.empty()) {
@@ -472,7 +499,9 @@ bool scan_build(const pvz2_elf_image_t *img, GameSymbols *out, BuildScanReport *
         if (e.known == nullptr) {
             /* An entry with no use in this port -- still worth naming, because
              * it is part of the map of the build. Ungrouped ones are noise. */
-            if (grouped[i]) pvz2_log("[version]   %-48s .so+0x%x (unused)", e.name, (unsigned)e.fn);
+            if (grouped[i]) {
+                pvz2_log("[version]   %-48s .so+0x%x (unused)", e.name, (unsigned)(e.fn - im.lo));
+            }
             continue;
         }
         const std::size_t name_index = (std::size_t)(e.known - kNativeNames);
@@ -480,7 +509,7 @@ bool scan_build(const pvz2_elf_image_t *img, GameSymbols *out, BuildScanReport *
         /* An array holds each name once; a second sighting is a copy. Keep the
          * first so the offsets stay stable if a build duplicates a name. */
         if (field_value(*out, e.known->field) != 0) continue;
-        pvz2_log("[version]   %-48s .so+0x%x%s", e.name, (unsigned)e.fn,
+        pvz2_log("[version]   %-48s .so+0x%x%s", e.name, (unsigned)(e.fn - im.lo),
                  grouped[i] ? "" : " (single-entry array)");
         assign_native(out, e.known->field, e.fn);
         ++mapped;
@@ -520,6 +549,14 @@ bool scan_build(const pvz2_elf_image_t *img, GameSymbols *out, BuildScanReport *
         std::snprintf(report->missing, sizeof(report->missing),
                       "Native_GameAppInitialize signature could not be parsed");
         return false;
+    }
+
+    /* The three Notify* natives and PumpMessageQueue arrived together in 9.6.1;
+     * one without the other means the map is incomplete, and the symptom would
+     * be a black frame rather than a failure to start. */
+    if (out->native.notify_surface_change != 0 && out->native.pump_message_queue == 0) {
+        pvz2_log("[version] this build declares the 9.x Notify* natives but no "
+                 "PumpMessageQueue -- the lifecycle queue will not be drained");
     }
 
     bool pad_assumed = true;

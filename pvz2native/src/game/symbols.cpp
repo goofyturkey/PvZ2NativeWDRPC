@@ -376,7 +376,18 @@ const GameSymbols kVersions[] = {
      *   0x1d10138 (5) the HTTP callbacks
      * Several lifecycle natives are one-instruction thunks -- 0x1277934 and
      * 0x1277938 are a bare `BX LR` -- which is why they sit 4 bytes apart and
-     * looks like a misread but is not. */
+     * looks like a misread but is not.
+     *
+     * Grind Thousand (GT000, package com.ea.game.pvz2_gt) ships this same
+     * libPVZ2.so: all thirty-one RegisterNatives entries, the app_driver GOT
+     * slot 0x1d9ce44 that onDrawFrame and the three Notify* natives each reach
+     * through, the AndroidAppDriver vtable at 0x1d0eb90 with its publish slot,
+     * and both fingerprints were re-checked against its 30,915,228-byte image.
+     * It therefore has no entry of its own -- it has no differences. One thing
+     * worth knowing about this build family: PumpMessageQueue is registered
+     * WITHOUT the Native_ prefix (table 0x1d0eaa4), which build_scan.cpp now
+     * accepts; assuming the prefix is what made a structural identification of
+     * this build come out with the one native whose absence paints nothing. */
     {
         .version = "9.6.1",
         .native = {
@@ -462,6 +473,40 @@ bool matches(const pvz2_elf_image_t *img, const GameSymbols &v) {
            fingerprint_at(img, v.native.game_app_initialize) == v.fingerprint_game_app_init;
 }
 
+/* A mod rebases one of the builds above and renames the Android package, which
+ * it also writes into its libPVZ2.so (that string is what
+ * Info_SysGetPackageName hands the engine, and the engine builds its own paths
+ * from it). So the package name is free, reliable evidence of WHICH mod a build
+ * is, without a second address table: the addresses are the base build's. Naming
+ * it turns "identified as 9.6.1" into "Grind Thousand, on the 9.6.1 engine" in a
+ * bug report. */
+void log_mod_identity(const pvz2_elf_image_t *img) {
+    struct Mod {
+        const char *package;
+        const char *label;
+    };
+    static const Mod kMods[] = {
+        {"com.ea.game.pvz2_gt", "Grind Thousand"},
+        {"com.ea.game.pvz2_rfl", "Reflourished"},
+        {"com.ea.game.pvz2_ecl", "ECLISE"},
+    };
+    const std::uint32_t lo = img->so_base;
+    const std::uint32_t hi = lo + img->so_span <= img->mem_size ? lo + img->so_span : img->mem_size;
+    if (hi <= lo) return;
+    const char *begin = (const char *)&img->mem[lo];
+    const std::size_t size = hi - lo;
+    for (const Mod &m : kMods) {
+        const std::size_t len = std::strlen(m.package);
+        if (len == 0 || len > size) continue;
+        for (std::size_t at = 0; at + len <= size; ++at) {
+            if (std::memcmp(begin + at, m.package, len) != 0) continue;
+            pvz2_log("[version] ...and it is the %s build (package %s), which keeps the engine "
+                     "above unchanged", m.label, m.package);
+            return;
+        }
+    }
+}
+
 }  // namespace
 
 const GameSymbols &sym() { return *g_active; }
@@ -474,6 +519,7 @@ bool game_symbols_detect(const pvz2_elf_image_t *img) {
         g_active = &v;
         pvz2_log("[version] libPVZ2.so identified as %s (onDrawFrame at 0x%x, verified)",
                  v.version, v.native.on_draw_frame);
+        log_mod_identity(img);
         return true;
     }
 
@@ -502,6 +548,7 @@ bool game_symbols_detect(const pvz2_elf_image_t *img) {
         pvz2_log("[version] identified structurally as %s -- engine globals, field offsets "
                  "and patch sites stay unmapped (see src/game/build_scan.cpp)",
                  report.name);
+        log_mod_identity(img);
         return true;
     }
     pvz2_log("[version] structural scan refused it too: %s",

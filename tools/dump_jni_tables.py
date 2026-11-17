@@ -67,7 +67,10 @@ NATIVES = {
     "Native_onSurfaceCreated": "()V",
     "Native_onSurfaceChanged": "(II)V",
     "Native_onDrawFrame": "()V",
-    "Native_PumpMessageQueue": "()V",
+    # 9.6.1 registers this one WITHOUT the Native_ prefix, and everything
+    # derived from it (Reflourished, Grind Thousand) keeps that spelling.
+    "PumpMessageQueue": "()V",
+    "Native_PumpMessageQueue": "()V",  # only if some build prefixes it
     "Native_createNativeApplicationLifecycleObserver": None,
     "Native_NotifySurfaceChange": "(Z)V",
     "Native_NotifyAppRunning": "(Z)V",
@@ -89,6 +92,7 @@ FIELD_OF = {
     "Native_onSurfaceCreated": ("native", "on_surface_created"),
     "Native_onSurfaceChanged": ("native", "on_surface_changed"),
     "Native_onDrawFrame": ("native", "on_draw_frame"),
+    "PumpMessageQueue": ("native", "pump_message_queue"),
     "Native_PumpMessageQueue": ("native", "pump_message_queue"),
     "Native_createNativeApplicationLifecycleObserver": ("native", "create_lifecycle_observer"),
     "Native_NotifySurfaceChange": ("native", "notify_surface_change"),
@@ -291,7 +295,11 @@ def scan(image: Image) -> Report:
         if not image.readable(name_ptr, 8):
             continue
         head = data[name_ptr:name_ptr + 8]
-        if not (head.startswith(b"Native_") or head.startswith(b"Http")):
+        # Every native name starts with an upper-case letter. Deliberately not
+        # filtered on a "Native_" prefix: 9.6.1 registers PumpMessageQueue bare,
+        # and that is the one native whose absence leaves a 9.x boot painting
+        # nothing.
+        if not head[:1].isupper():
             continue
         raw_name = image.cstr(name_ptr, 96)
         if raw_name is None:
@@ -305,11 +313,17 @@ def scan(image: Image) -> Report:
         raw_sig = image.cstr(image.u32(at + 4), 1024)
         if raw_sig is None or not raw_sig.startswith(b"(") or b")" not in raw_sig:
             continue
+        # A JNI signature is a restricted alphabet; a printf format like
+        # "(%d x %d)" has the same shape and is not one.
+        if not all(chr(c).isalnum() or c in b"()[];/_$" for c in raw_sig):
+            continue
         try:
             signature = raw_sig.decode("ascii")
         except UnicodeDecodeError:
             continue
         fn = image.u32(at + 8)
+        if fn & 3:
+            continue  # ARM code is word-aligned; an odd "function" is a datum
         if not image.readable(fn, 4) or not plausible_code(image, fn):
             continue
         if not image.in_exec(fn):
