@@ -32,7 +32,7 @@ jobs:
     name: Self-tests (no game files)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Structural scanner self-test
         # game/build_scan.cpp identifies modded libPVZ2.so builds by reading their
@@ -56,7 +56,7 @@ jobs:
     needs: self-tests
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install build dependencies
         # python3-jinja2 is not optional: glad's generator is a python module in
@@ -95,7 +95,7 @@ jobs:
           file pvz2 | grep -q 'ELF 64-bit' || { echo "pvz2 is not an ELF64 binary"; exit 1; }
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pvz2-linux-x86_64
           path: build/pvz2native/pvz2
