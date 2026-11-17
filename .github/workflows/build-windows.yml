@@ -1,0 +1,93 @@
+name: Windows Build
+
+# Counterpart of build-linux.yml: tags and manual dispatch, and it uploads the
+# packaged zip to the release. The build/package steps are the same ones the
+# CI workflow runs on every push (see .github/workflows/ci.yml), which is where
+# they are exercised; this file only adds the upload.
+#
+# Mirrors compile-ninja.bat rather than compile-msvc.bat: x64, and an explicit
+# -DARCHITECTURE=x86_64. -A Win32 (what compile-msvc.bat uses) puts dynarmic on
+# a 32-bit host, and the port's own CMakeLists explains why that cannot link --
+# dynarmic has x86_64/arm64/riscv64 host backends and no 32-bit x86 one.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to upload to (e.g. v1.2.0)'
+        required: true
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        # glad's generator is a python module in this tree and the build renders
+        # its sources through jinja2; without it the build dies generating
+        # gladsources/glad/include/EGL/eglplatform.h. Everything else (MSVC,
+        # CMake, Ninja) is already on the runner image.
+        run: python -m pip install --disable-pip-version-check jinja2
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-win -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DARCHITECTURE=x86_64 `
+            -DBOOST_ROOT="${{ github.workspace }}/third_party/boost_1_84_0" `
+            -DBoost_INCLUDE_DIR="${{ github.workspace }}/third_party/boost_1_84_0" `
+            -DBoost_NO_SYSTEM_PATHS=ON
+
+      - name: Build
+        run: cmake --build build-win --config Release --parallel
+
+      - name: Smoke test
+        # --help runs before SDL_Init and before any game file is opened, so it
+        # is the one path that works on a runner with no assets. It also proves
+        # the binary actually executes rather than merely having been linked.
+        shell: pwsh
+        run: |
+          $exe = "build-win/pvz2native/Release/pvz2.exe"
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          $out = & ./$exe --help 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "pvz2 --help exited $LASTEXITCODE`n$out" }
+          foreach ($needle in @('--fullscreen=1', '--fps_limit=120')) {
+            if ($out -notlike "*$needle*") { throw "usage text does not mention $needle`n$out" }
+          }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "Plants vs. Zombies 2 - It's About Time"
+          $stage = "dist-windows/$name"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "build-win/pvz2native/Release/pvz2.exe" $stage
+          Copy-Item -Recurse "build-win/pvz2native/Release/assets" $stage
+          Copy-Item "pvz2native/presence_rules*.txt" $stage
+          Compress-Archive -Path "dist-windows/$name" -DestinationPath "PvZ2Native-Windows.zip" -Force
+
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "No release tag specified. Skipping upload."
+            exit 1
+          fi
+          echo "Uploading Windows asset to release: $TAG"
+          gh release upload "$TAG" PvZ2Native-Windows.zip --clobber

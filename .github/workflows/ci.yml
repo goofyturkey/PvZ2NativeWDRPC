@@ -82,21 +82,81 @@ jobs:
           ./compile.sh --no-assets --jobs "$(nproc)"
 
       - name: Smoke test
-        # There are no game files on a runner, so the app is expected to exit
-        # non-zero -- but it must get far enough into main() to seed its
-        # configuration, which is what proves the binary linked and runs rather
-        # than merely existing. Dummy video/audio drivers keep SDL off the
-        # display.
+        # --help runs before SDL_Init and before any game file is opened, so it
+        # is the one path that works on a runner with no assets. It also proves
+        # the binary executes rather than merely having been linked.
         run: |
           cd build/pvz2native
-          rm -f config.ini
-          SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout 60 ./pvz2 || true
-          test -s config.ini || { echo "config.ini was not seeded -- main() did not run"; exit 1; }
           file pvz2 | grep -q 'ELF 64-bit' || { echo "pvz2 is not an ELF64 binary"; exit 1; }
+          ./pvz2 --help | tee /tmp/usage.txt
+          for needle in '--fullscreen=1' '--fps_limit=120'; do
+            grep -q -- "$needle" /tmp/usage.txt || { echo "usage text does not mention $needle"; exit 1; }
+          done
 
       - name: Upload binary
         uses: actions/upload-artifact@v7
         with:
           name: pvz2-linux-x86_64
           path: build/pvz2native/pvz2
+          if-no-files-found: error
+
+  build-windows:
+    name: Build (Windows x64, Release)
+    needs: self-tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        # glad's generator is a python module in this tree and the build renders
+        # its sources through jinja2; without it the build dies generating
+        # gladsources/glad/include/EGL/eglplatform.h. MSVC, CMake and Ninja are
+        # already on the runner image.
+        run: python -m pip install --disable-pip-version-check jinja2
+
+      - name: Configure
+        # x64, like compile-ninja.bat and unlike compile-msvc.bat: -A Win32 puts
+        # dynarmic on a 32-bit host, and it has no 32-bit x86 backend, so the
+        # link fails on every Dynarmic::A32::Jit symbol.
+        run: |
+          cmake -S . -B build-win -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DARCHITECTURE=x86_64 `
+            -DBOOST_ROOT="${{ github.workspace }}/third_party/boost_1_84_0" `
+            -DBoost_INCLUDE_DIR="${{ github.workspace }}/third_party/boost_1_84_0" `
+            -DBoost_NO_SYSTEM_PATHS=ON
+
+      - name: Build
+        run: cmake --build build-win --config Release --parallel
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $exe = "build-win/pvz2native/Release/pvz2.exe"
+          if (-not (Test-Path $exe)) { throw "missing $exe" }
+          $out = & ./$exe --help 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "pvz2 --help exited $LASTEXITCODE`n$out" }
+          foreach ($needle in @('--fullscreen=1', '--fps_limit=120')) {
+            if ($out -notlike "*$needle*") { throw "usage text does not mention $needle`n$out" }
+          }
+
+      - name: Package
+        # Same layout and name the release workflow ships, so a green run here
+        # means the artifact is what players would download.
+        shell: pwsh
+        run: |
+          $name = "Plants vs. Zombies 2 - It's About Time"
+          $stage = "dist-windows/$name"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "build-win/pvz2native/Release/pvz2.exe" $stage
+          Copy-Item -Recurse "build-win/pvz2native/Release/assets" $stage
+          Copy-Item "pvz2native/presence_rules*.txt" $stage
+          Compress-Archive -Path "dist-windows/$name" -DestinationPath "PvZ2Native-Windows.zip" -Force
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: pvz2-windows-x64
+          path: PvZ2Native-Windows.zip
           if-no-files-found: error
