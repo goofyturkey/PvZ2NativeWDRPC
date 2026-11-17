@@ -30,6 +30,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Set up Python
+        # Pinned on purpose. glad is invoked as `python3 -m glad` with whichever
+        # interpreter CMake resolves, and installing jinja2 into a different one
+        # (the image ships several) leaves the build failing at the generator
+        # with ModuleNotFoundError. The configure step passes this interpreter
+        # to CMake explicitly, so there is only one candidate.
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
       - name: Install build dependencies
         # glad's generator is a python module in this tree and the build renders
         # its sources through jinja2; without it the build dies generating
@@ -99,6 +109,8 @@ jobs:
             '-DARCHITECTURE=x86_64',
             "-DBOOST_ROOT=$env:GITHUB_WORKSPACE/third_party/boost_1_84_0",
             "-DBoost_INCLUDE_DIR=$env:GITHUB_WORKSPACE/third_party/boost_1_84_0",
+            "-DPython_EXECUTABLE=$env:pythonLocation/python.exe",
+            "-DPython3_EXECUTABLE=$env:pythonLocation/python.exe",
             '-DBoost_NO_SYSTEM_PATHS=ON'
           )
           & cmake @cmakeArgs 2>&1 | Tee-Object -FilePath configure.log
