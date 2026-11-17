@@ -12,7 +12,11 @@ name: CI
 on:
   push:
     # Every branch, not just main: work lands on feature branches first, and a
-    # red badge there is the point of having CI in the first place.
+    # red badge there is the point of having CI in the first place. Tags are
+    # excluded on purpose -- a tag push runs the two release workflows, which do
+    # the same build, and there is no reason to build everything three times.
+    branches: ['**']
+    tags-ignore: ['**']
     paths-ignore:
       - '**/*.md'
       - 'LICENSE*'
