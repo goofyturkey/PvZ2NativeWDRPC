@@ -201,6 +201,32 @@ void net_mark_boot_finished();
  * guest runs. */
 std::vector<std::uint8_t> read_cdn_cached_package(GuestRuntime *rt, const char *pkg_path, const char *cache_name);
 
+/* Battlez ("Joust") answered locally -- hooks/joust_local.cpp. The first says whether a URL is the
+ * Battlez game server (pvz2-gs.awspopcap.com/joust/v1/...); the second answers one of its requests with
+ * a JSON body and logs both as [joust]; the third is the generated joust_schedule (weekly tournaments
+ * from 2026), served in place of the OBB's copy, which ends in 2018. */
+bool joust_is_game_server_url(const std::string &url);
+std::string joust_local_respond(const std::string &method, const std::string &url, const std::string &body);
+std::vector<std::uint8_t> joust_schedule_rton();
+/* The Discord name a Battlez name number stands for (numbers from 1000000 up), or false for the game's
+ * own names. */
+bool joust_player_name(long long name_id, std::string &out);
+
+/* One Battlez request sent to the owner's server (cloud config nas_server_url + /joust/v1/..., with the
+ * linked Discord account), or answered by joust_local_respond when the server cannot be reached or has
+ * no Battlez yet. Blocking (it runs curl): call it off the game thread. Remembers the Discord names the
+ * server sends for joust_player_name. */
+struct JoustReply {
+    int status = 0;
+    std::string body;
+    bool from_server = false;
+};
+JoustReply joust_request(const std::string &method, const std::string &url, const std::string &body);
+
+/* Hands finished Battlez requests to the engine (HttpReceivedResponse/Data/TransactionComplete).
+ * Called once per frame between top-level guest calls -- see hooks/android_http.cpp. */
+void joust_deliver_pending(pvz2_elf_image_t *img, GuestRuntime *rt);
+
 void register_framework_activity(HookTable &t);
 void register_google_play(HookTable &t);
 void register_facebook(HookTable &t);

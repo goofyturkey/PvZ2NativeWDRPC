@@ -22,6 +22,7 @@
 #include <pvz2native/diagnostics/verbose.h>
 #include <pvz2native/gfx/gl_requirements.h>
 #include <pvz2native/gfx/cloud_icon.h>
+#include <pvz2native/gfx/joust_avatars.h>
 #include <pvz2native/surface.h>
 
 #include <glad/gl.h>
@@ -50,6 +51,33 @@ namespace {
  * render-size viewport and the picture sits in one corner of a larger or
  * maximised window. Only the composite draws to framebuffer 0. */
 std::atomic<GLuint> g_bound_fbo{0};
+
+/* The program the guest last bound with glUseProgram, or -1 when unknown.
+ * gl_glUniformMatrix4fv needs it on every call, and asking the driver
+ * (glGetIntegerv(GL_CURRENT_PROGRAM)) is a sync point: with NVIDIA's threaded
+ * optimisation each one cost ~0.1 ms, and busy screens such as the Battlez seed
+ * chooser upload thousands of matrices a frame, which held them near 20 fps.
+ * Reset to unknown before each guest frame (gl_forget_current_program), since the
+ * host overlays bind their own programs directly. */
+std::atomic<GLint> g_current_program{-1};
+
+/* glGetUniformLocation answers, per program and uniform name. */
+std::mutex g_uniform_loc_lock;
+std::unordered_map<GLuint, std::unordered_map<std::string, GLint>> g_uniform_locs;
+
+void forget_uniform_locations(GLuint program) {
+    std::lock_guard<std::mutex> lk(g_uniform_loc_lock);
+    g_uniform_locs.erase(program);
+}
+
+GLint current_program() {
+    GLint p = g_current_program.load(std::memory_order_relaxed);
+    if (p < 0) {
+        glGetIntegerv(GL_CURRENT_PROGRAM, &p);
+        g_current_program.store(p, std::memory_order_relaxed);
+    }
+    return p;
+}
 
 /* Drains the host GL error queue after an operation the guest never checks
  * itself. Budgeted, so a per-frame error cannot flood the log. */
@@ -745,6 +773,7 @@ void gl_glCompileShader(GuestCall &c) {
 void gl_glLinkProgram(GuestCall &c) {
     GLuint program = c.arg(0);
     glLinkProgram(program);
+    forget_uniform_locations(program);
     /* Same reasoning as gl_glCompileShader: the engine never checks, so a failed
      * link is otherwise invisible and reads as a black screen. */
     GLint status = 0;
@@ -974,6 +1003,22 @@ void gl_glCompressedTexImage2D(GuestCall &c) {
     if (internalformat == 0x8D64 /* GL_ETC1_RGB8_OES */ && level == 0)
         data = pvz2native::cloud_icon_filter_etc1(data, imageSize, width, height);
 
+    /* Battlez avatar atlas: always decoded to RGB8, so Discord pictures can be painted into it later
+     * (a compressed texture takes no glTexSubImage2D of plain pixels). */
+    if (internalformat == 0x8D64 /* GL_ETC1_RGB8_OES */ && level == 0) {
+        const int atlas = pvz2native::joust_avatars::match_color(data, imageSize, width, height);
+        static thread_local std::vector<std::uint8_t> avatar_rgb;
+        if (atlas >= 0 && etc1_decode((const std::uint8_t *)data, imageSize, width, height, avatar_rgb)) {
+            glTexImage2D(c.arg(0), level, 0x8051 /* GL_RGB8 */, width, height, 0, 0x1907 /* GL_RGB */,
+                         0x1401 /* GL_UNSIGNED_BYTE */, avatar_rgb.data());
+            report_gl_error(c, "glTexImage2D(avatar atlas ETC1->RGB8)");
+            GLint bound = 0;
+            glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+            pvz2native::joust_avatars::uploaded(atlas, false, (std::uint32_t)bound);
+            return;
+        }
+    }
+
     /* ETC1: decode to RGB8 on the CPU and upload uncompressed, so it no longer
      * matters whether this driver exposes ETC1/ETC2 at all. Every non-RGBA PvZ2
      * texture takes this path -- backgrounds, plants, the lot -- and passing ETC1
@@ -1031,6 +1076,7 @@ void gl_glDeleteFramebuffers(GuestCall &c) {
 
 void gl_glDeleteProgram(GuestCall &c) {
     glDeleteProgram(c.arg(0));
+    forget_uniform_locations(c.arg(0));
 }
 
 void gl_glDeleteShader(GuestCall &c) {
@@ -1038,7 +1084,9 @@ void gl_glDeleteShader(GuestCall &c) {
 }
 
 void gl_glDeleteTextures(GuestCall &c) {
-    glDeleteTextures(c.arg(0), (const GLuint *)c.ptr(c.arg(1)));
+    const auto *names = (const GLuint *)c.ptr(c.arg(1));
+    for (GLsizei i = 0; names != nullptr && i < (GLsizei)c.arg(0); ++i) pvz2native::joust_avatars::deleted(names[i]);
+    glDeleteTextures(c.arg(0), names);
 }
 
 void gl_glDepthFunc(GuestCall &c) {
@@ -1293,10 +1341,18 @@ void gl_glTexEnvf(GuestCall &c) {
 void gl_glTexImage2D(GuestCall &c) {
     const void *pixels = c.ptr(c.arg(8));
     /* The main menu atlas carries its alpha as a separate GL_ALPHA image. */
-    if (c.arg(1) == 0 && c.arg(6) == 0x1906 /* GL_ALPHA */ && c.arg(7) == 0x1401 /* GL_UNSIGNED_BYTE */)
+    int avatar_atlas = -1;
+    if (c.arg(1) == 0 && c.arg(6) == 0x1906 /* GL_ALPHA */ && c.arg(7) == 0x1401 /* GL_UNSIGNED_BYTE */) {
         pixels = pvz2native::cloud_icon_filter_alpha(pixels, (int)c.arg(3), (int)c.arg(4));
+        avatar_atlas = pvz2native::joust_avatars::match_alpha(pixels, (int)c.arg(3), (int)c.arg(4));
+    }
     glTexImage2D(c.arg(0), c.arg(1), c.arg(2), c.arg(3), c.arg(4), c.arg(5),
                               c.arg(6), c.arg(7), pixels);
+    if (avatar_atlas >= 0) {
+        GLint bound = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+        pvz2native::joust_avatars::uploaded(avatar_atlas, true, (std::uint32_t)bound);
+    }
 }
 
 void gl_glTexParameteri(GuestCall &c) {
@@ -1306,11 +1362,19 @@ void gl_glTexParameteri(GuestCall &c) {
 void gl_glTexSubImage2D(GuestCall &c) {
     const void *pixels = c.ptr(c.arg(8));
     /* Atlas alpha arrives as one full-size sub-upload into a texture allocated empty. */
+    int avatar_atlas = -1;
     if (c.arg(1) == 0 && c.arg(2) == 0 && c.arg(3) == 0 && c.arg(6) == 0x1906 /* GL_ALPHA */ &&
-        c.arg(7) == 0x1401 /* GL_UNSIGNED_BYTE */)
+        c.arg(7) == 0x1401 /* GL_UNSIGNED_BYTE */) {
         pixels = pvz2native::cloud_icon_filter_alpha(pixels, (int)c.arg(4), (int)c.arg(5));
+        avatar_atlas = pvz2native::joust_avatars::match_alpha(pixels, (int)c.arg(4), (int)c.arg(5));
+    }
     glTexSubImage2D(c.arg(0), c.arg(1), c.arg(2), c.arg(3), c.arg(4), c.arg(5),
                                   c.arg(6), c.arg(7), pixels);
+    if (avatar_atlas >= 0) {
+        GLint bound = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
+        pvz2native::joust_avatars::uploaded(avatar_atlas, true, (std::uint32_t)bound);
+    }
 }
 
 void gl_glUniform1i(GuestCall &c) {
@@ -1367,8 +1431,7 @@ void gl_glUniformMatrix4fv(GuestCall &c) {
      * Re-resolving against the bound program fixes it without touching the
      * engine's caching. Only done when the program has exactly one mat4, so a
      * shader with several is never second-guessed. */
-    GLint program = 0;
-    glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+    const GLint program = current_program();
     if (program != 0) {
         const GLint actual = sole_mat4_location((GLuint)program);
         if (actual >= 0 && actual != loc) {
@@ -1477,6 +1540,7 @@ void gl_glUniformMatrix4fv(GuestCall &c) {
 
 void gl_glUseProgram(GuestCall &c) {
     glUseProgram(c.arg(0));
+    g_current_program.store((GLint)c.arg(0), std::memory_order_relaxed);
 }
 
 void gl_glVertexAttribPointer(GuestCall &c) {
@@ -1493,7 +1557,22 @@ void gl_glVertexPointer(GuestCall &c) {
  * silently alias every uniform onto slot 0. */
 void gl_glGetUniformLocation(GuestCall &c) {
     std::string nm = c.cstr(c.arg(1), 256);
-    const GLint loc = glGetUniformLocation(c.arg(0), nm.c_str());
+    /* Cached per program: the engine asks again every frame, and each driver query
+     * cost ~35 us (see g_current_program). A location is fixed until the program is
+     * relinked or deleted, which clear its entries (forget_uniform_locations). */
+    const GLuint program = c.arg(0);
+    GLint loc;
+    {
+        std::lock_guard<std::mutex> lk(g_uniform_loc_lock);
+        auto &names = g_uniform_locs[program];
+        auto it = names.find(nm);
+        if (it != names.end()) {
+            loc = it->second;
+        } else {
+            loc = glGetUniformLocation(program, nm.c_str());
+            names.emplace(nm, loc);
+        }
+    }
     /* The engine ends up calling glUniformMatrix4fv with location 0, which is
      * a sampler2D -- so either it never asks for the matrix's location, or it
      * asks and does not get 2. Logging every query answers which, and a failed
@@ -1513,6 +1592,8 @@ void gl_glGetUniformLocation(GuestCall &c) {
 }  // namespace
 
 bool gl_strict_enabled() { return pvz2_config()->gl_strict != 0; }
+
+void gl_forget_current_program() { g_current_program.store(-1, std::memory_order_relaxed); }
 
 /* glUniformMatrix4fv rejects with INVALID_OPERATION when the uniform at that
  * location is not a mat4 (or the location does not belong to the current
